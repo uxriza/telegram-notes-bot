@@ -31,6 +31,7 @@ export function helpMessage() {
     "/places - lihat kategori places",
     "/notes - lihat kategori notes",
     "/done 12 - tandai item selesai",
+    "/delete 12 - hapus item",
     "/summary - lihat ringkasan aktif",
     "/help - lihat bantuan"
   ].join("\n");
@@ -58,6 +59,10 @@ export function doneKeyboard(items) {
       {
         text: `Selesai #${item.id}`,
         callback_data: `done:${item.id}`
+      },
+      {
+        text: `Hapus #${item.id}`,
+        callback_data: `delete:${item.id}`
       }
     ])
   };

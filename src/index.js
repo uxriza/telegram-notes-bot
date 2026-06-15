@@ -50,6 +50,11 @@ function parseDoneCommand(text) {
   return match ? Number(match[1]) : null;
 }
 
+function parseDeleteCommand(text) {
+  const match = text.match(/^\/delete\s+(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
 async function handleCommand(message, store, telegram) {
   const chatId = message.chat.id;
   const text = normalizeInput(message.text);
@@ -82,6 +87,14 @@ async function handleCommand(message, store, telegram) {
     const item = store.markDone({ chatId, id: doneId });
     const resolvedItem = await item;
     const reply = resolvedItem ? `Selesai: ${formatItem(resolvedItem)}` : `Item #${doneId} ga ketemu.`;
+    await telegram.sendMessage(chatId, reply, replyMarkup);
+    return;
+  }
+
+  const deleteId = parseDeleteCommand(text);
+  if (deleteId) {
+    const item = await store.deleteItem({ chatId, id: deleteId });
+    const reply = item ? `Dihapus: ${formatItem(item)}` : `Item #${deleteId} ga ketemu.`;
     await telegram.sendMessage(chatId, reply, replyMarkup);
     return;
   }
@@ -119,6 +132,19 @@ async function handleCallbackQuery(callbackQuery, store, telegram) {
     );
 
     const reply = item ? `Selesai: ${formatItem(item)}` : `Item #${id} ga ketemu.`;
+    await telegram.sendMessage(chatId, reply, replyMarkup);
+    return;
+  }
+
+  if (callbackData.startsWith("delete:")) {
+    const id = Number(callbackData.split(":")[1]);
+    const item = await store.deleteItem({ chatId, id });
+    await telegram.answerCallbackQuery(
+      callbackQuery.id,
+      item ? "Item dihapus" : "Item tidak ditemukan"
+    );
+
+    const reply = item ? `Dihapus: ${formatItem(item)}` : `Item #${id} ga ketemu.`;
     await telegram.sendMessage(chatId, reply, replyMarkup);
     return;
   }

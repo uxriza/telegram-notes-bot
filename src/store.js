@@ -84,6 +84,24 @@ export class Store {
     return mapItem(row);
   }
 
+  async deleteItem({ chatId, id }) {
+    const row = await this.db
+      .prepare("SELECT * FROM items WHERE id = ? AND chat_id = ?")
+      .bind(id, String(chatId))
+      .first();
+
+    if (!row) {
+      return null;
+    }
+
+    await this.db
+      .prepare("DELETE FROM items WHERE id = ? AND chat_id = ?")
+      .bind(id, String(chatId))
+      .run();
+
+    return mapItem(row);
+  }
+
   async dueReminders(now = new Date()) {
     const nowIsoValue = now.toISOString();
     const upperBound = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
