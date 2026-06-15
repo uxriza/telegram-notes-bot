@@ -1,6 +1,7 @@
 # Telegram Notes Bot
 
 Bot ini buat ngubah kebiasaan nyatet manual di Telegram jadi inbox yang lebih rapi, tapi tetap lewat chat.
+Versi ini sekarang disiapkan untuk `Cloudflare Workers + D1`, jadi lebih masuk akal buat project personal yang pengen murah atau gratis.
 
 ## Yang udah bisa
 
@@ -8,19 +9,8 @@ Bot ini buat ngubah kebiasaan nyatet manual di Telegram jadi inbox yang lebih ra
 - Auto-kategori ke `todo`, `buy`, `places`, atau `notes`
 - Lihat daftar item aktif
 - Tandai item selesai tanpa hapus manual
-- Simpan data lokal di file JSON
-
-## Setup
-
-1. Buat bot baru lewat `@BotFather` di Telegram.
-2. Copy token bot.
-3. Duplicate `.env.example` jadi `.env`.
-4. Isi `TELEGRAM_BOT_TOKEN`.
-5. Jalankan bot:
-
-```bash
-npm start
-```
+- Reminder `15 menit sebelum` dan `pas waktunya`
+- Simpan data di `Cloudflare D1`
 
 ## Command
 
@@ -41,47 +31,66 @@ Contoh pesan biasa:
 - `update porto behance`
 - `visit coffee shop di blok m`
 - `ide konten buat personal branding`
+- `interview nanti jam 8 malem`
+- `jam 10 test reminder notes`
+- `sore jam 14.30 interview HR cek email`
 
-## Catatan
+## Deploy ke Cloudflare
 
-- Data disimpan di `data/notes.json`
-- Versi ini pakai polling, jadi cukup jalanin lokal tanpa deploy server
-- Kalau nanti kamu mau, versi berikutnya bisa ditambah:
-  - deadline
-  - reminder
-  - tag custom
-  - export ke Notion atau Google Sheet
+1. Install dependency:
 
-## Deploy
+```bash
+npm install
+```
 
-Kalau kamu mau bot tetap hidup walau laptop mati atau sleep, deploy sebagai background worker.
+2. Login ke Cloudflare:
 
-### Opsi 1: Render
+```bash
+npx wrangler login
+```
 
-Project ini sudah disiapkan dengan [render.yaml](/Users/fajarriza/Documents/Codex/2026-06-14/jadi-sekarang-aku-tu-kalo-nyatet/render.yaml:1) dan [Dockerfile](/Users/fajarriza/Documents/Codex/2026-06-14/jadi-sekarang-aku-tu-kalo-nyatet/Dockerfile:1).
+3. Buat database D1:
 
-Langkah singkat:
+```bash
+npx wrangler d1 create telegram-notes-bot
+```
 
-1. Push project ini ke GitHub.
-2. Di Render, buat service baru dari repo ini.
-3. Pastikan type-nya `Background Worker`.
-4. Isi env var `TELEGRAM_BOT_TOKEN`.
-5. Render akan mount persistent disk ke `/data`, jadi catatan tetap aman saat redeploy.
+Copy `database_id` hasilnya, lalu tempel ke [wrangler.jsonc](/Users/fajarriza/Documents/Codex/2026-06-14/jadi-sekarang-aku-tu-kalo-nyatet/wrangler.jsonc:1) pada field `database_id`.
 
-### Opsi 2: Railway
+4. Jalankan schema:
 
-Project ini juga siap dipakai di Railway dengan [railway.json](/Users/fajarriza/Documents/Codex/2026-06-14/jadi-sekarang-aku-tu-kalo-nyatet/railway.json:1).
+```bash
+npx wrangler d1 execute telegram-notes-bot --file=schema.sql
+```
 
-Langkah singkat:
+5. Set secret:
 
-1. Push project ini ke GitHub.
-2. Buat project baru di Railway dari repo ini.
-3. Isi env var `TELEGRAM_BOT_TOKEN`.
-4. Tambahkan volume lalu mount ke `/data`.
-5. Tambahkan env var `DATA_DIR=/data`.
+```bash
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+npx wrangler secret put ADMIN_SECRET
+```
 
-### Penting
+6. Deploy:
 
-- Kalau deploy tanpa persistent disk atau volume, file JSON bisa hilang saat redeploy.
-- Bot ini tidak butuh web port karena dia jalan sebagai polling worker.
-- Log startup akan nunjukin file data yang dipakai.
+```bash
+npm run deploy
+```
+
+7. Set webhook ke Telegram.
+
+Setelah deploy, ambil URL Worker kamu lalu panggil:
+
+```bash
+curl -X POST https://YOUR-WORKER.workers.dev/admin/setup-webhook \
+  -H "x-admin-secret: YOUR_ADMIN_SECRET"
+```
+
+Kalau sukses, endpoint webhook Telegram akan diarahkan ke:
+`https://YOUR-WORKER.workers.dev/telegram/webhook`
+
+## Catatan penting
+
+- Project ini sudah tidak mengandalkan process polling yang nyala terus.
+- Reminder diproses oleh cron Worker setiap 5 menit.
+- Karena cron jalan per 5 menit, reminder tidak selalu detik-presisi. Untuk project personal ini masih masuk akal.
+- Kalau nanti kamu mau reminder lebih presisi, next step-nya pakai Durable Objects atau queue.

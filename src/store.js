@@ -1,106 +1,118 @@
-import fs from "node:fs";
-
 function nowIso() {
   return new Date().toISOString();
 }
 
-function ensureDb(filePath) {
-  const directory = filePath.split("/").slice(0, -1).join("/");
-  fs.mkdirSync(directory, { recursive: true });
-
-  if (!fs.existsSync(filePath)) {
-    const initialData = {
-      lastId: 0,
-      items: []
-    };
-    fs.writeFileSync(filePath, JSON.stringify(initialData, null, 2));
+function mapItem(row) {
+  if (!row) {
+    return null;
   }
+
+  return {
+    id: row.id,
+    text: row.text,
+    category: row.category,
+    status: row.status,
+    userId: row.user_id,
+    chatId: row.chat_id,
+    reminder: row.reminder_at
+      ? {
+          at: row.reminder_at,
+          sent15MinAt: row.reminder_15_sent_at,
+          sentAtTime: row.reminder_sent_at
+        }
+      : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 export class Store {
-  constructor(filePath) {
-    this.filePath = filePath;
-    ensureDb(filePath);
+  constructor(db) {
+    this.db = db;
   }
 
-  read() {
-    return JSON.parse(fs.readFileSync(this.filePath, "utf8"));
+  async addItem({ text, category, userId, chatId, reminderAt = null }) {
+    const timestamp = nowIso();
+    const result = await this.db
+      .prepare(
+        `INSERT INTO items (
+          text, category, status, user_id, chat_id, reminder_at,
+          reminder_15_sent_at, reminder_sent_at, created_at, updated_at
+        ) VALUES (?, ?, 'active', ?, ?, ?, NULL, NULL, ?, ?)`
+      )
+      .bind(text, category, userId ? String(userId) : null, String(chatId), reminderAt, timestamp, timestamp)
+      .run();
+
+    const row = await this.db
+      .prepare("SELECT * FROM items WHERE id = ?")
+      .bind(result.meta.last_row_id)
+      .first();
+
+    return mapItem(row);
   }
 
-  write(data) {
-    fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2));
-  }
+  async listItems({ chatId, category, status = "active", limit = 10 }) {
+    let query = "SELECT * FROM items WHERE chat_id = ? AND status = ?";
+    const bindings = [String(chatId), status];
 
-  addItem({ text, category, userId, chatId, reminderAt = null }) {
-    const db = this.read();
-    const id = db.lastId + 1;
-    const reminder = reminderAt
-      ? {
-          at: reminderAt,
-          sent15MinAt: null,
-          sentAtTime: null
-        }
-      : null;
-    const item = {
-      id,
-      text,
-      category,
-      status: "active",
-      userId,
-      chatId,
-      reminder,
-      createdAt: nowIso(),
-      updatedAt: nowIso()
-    };
-
-    db.lastId = id;
-    db.items.unshift(item);
-    this.write(db);
-    return item;
-  }
-
-  listItems({ chatId, category, status = "active", limit = 10 }) {
-    const db = this.read();
-    return db.items
-      .filter((item) => item.chatId === chatId)
-      .filter((item) => (category ? item.category === category : true))
-      .filter((item) => (status ? item.status === status : true))
-      .slice(0, limit);
-  }
-
-  markDone({ chatId, id }) {
-    const db = this.read();
-    const item = db.items.find((entry) => entry.chatId === chatId && entry.id === id);
-    if (!item) {
-      return null;
+    if (category) {
+      query += " AND category = ?";
+      bindings.push(category);
     }
 
-    item.status = "done";
-    item.updatedAt = nowIso();
-    this.write(db);
-    return item;
+    query += " ORDER BY id DESC LIMIT ?";
+    bindings.push(limit);
+
+    const { results } = await this.db.prepare(query).bind(...bindings).all();
+    return results.map(mapItem);
   }
 
-  dueReminders(now = new Date()) {
-    const db = this.read();
+  async markDone({ chatId, id }) {
+    const timestamp = nowIso();
+    await this.db
+      .prepare(
+        "UPDATE items SET status = 'done', updated_at = ? WHERE id = ? AND chat_id = ?"
+      )
+      .bind(timestamp, id, String(chatId))
+      .run();
+
+    const row = await this.db
+      .prepare("SELECT * FROM items WHERE id = ? AND chat_id = ?")
+      .bind(id, String(chatId))
+      .first();
+
+    return mapItem(row);
+  }
+
+  async dueReminders(now = new Date()) {
+    const nowIsoValue = now.toISOString();
+    const upperBound = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM items
+         WHERE status = 'active'
+           AND reminder_at IS NOT NULL
+           AND (
+             reminder_sent_at IS NULL
+             OR reminder_15_sent_at IS NULL
+           )
+           AND reminder_at <= ?`
+      )
+      .bind(upperBound)
+      .all();
+
     const due = [];
 
-    for (const item of db.items) {
-      const reminderAt = item.reminder?.at ?? item.reminderAt ?? null;
-      if (item.status !== "active" || !reminderAt) {
-        continue;
-      }
-
-      const reminderDate = new Date(reminderAt);
+    for (const row of results) {
+      const item = mapItem(row);
+      const reminderDate = new Date(item.reminder.at);
       const fifteenMinutesBefore = new Date(reminderDate.getTime() - 15 * 60 * 1000);
-      const sent15MinAt = item.reminder?.sent15MinAt ?? null;
-      const sentAtTime = item.reminder?.sentAtTime ?? item.remindedAt ?? null;
 
-      if (!sent15MinAt && now >= fifteenMinutesBefore && now < reminderDate) {
+      if (!item.reminder.sent15MinAt && now >= fifteenMinutesBefore && now < reminderDate) {
         due.push({ item, type: "before" });
       }
 
-      if (!sentAtTime && now >= reminderDate) {
+      if (!item.reminder.sentAtTime && now >= reminderDate) {
         due.push({ item, type: "exact" });
       }
     }
@@ -108,37 +120,26 @@ export class Store {
     return due;
   }
 
-  markReminderSent(id, type) {
-    const db = this.read();
-    const item = db.items.find((entry) => entry.id === id);
-    if (!item) {
-      return null;
-    }
-
-    if (!item.reminder) {
-      item.reminder = {
-        at: item.reminderAt ?? null,
-        sent15MinAt: null,
-        sentAtTime: null
-      };
-    }
-
-    if (type === "before") {
-      item.reminder.sent15MinAt = nowIso();
-    }
-
-    if (type === "exact") {
-      item.reminder.sentAtTime = nowIso();
-    }
-
-    item.updatedAt = nowIso();
-    this.write(db);
-    return item;
+  async markReminderSent(id, type) {
+    const field = type === "before" ? "reminder_15_sent_at" : "reminder_sent_at";
+    const timestamp = nowIso();
+    await this.db
+      .prepare(`UPDATE items SET ${field} = ?, updated_at = ? WHERE id = ?`)
+      .bind(timestamp, timestamp, id)
+      .run();
   }
 
-  summary(chatId) {
-    const db = this.read();
-    const items = db.items.filter((item) => item.chatId === chatId && item.status === "active");
+  async summary(chatId) {
+    const { results } = await this.db
+      .prepare(
+        `SELECT category, COUNT(*) as count
+         FROM items
+         WHERE chat_id = ? AND status = 'active'
+         GROUP BY category`
+      )
+      .bind(String(chatId))
+      .all();
+
     const counts = {
       todo: 0,
       buy: 0,
@@ -146,11 +147,9 @@ export class Store {
       notes: 0
     };
 
-    for (const item of items) {
-      if (counts[item.category] !== undefined) {
-        counts[item.category] += 1;
-      } else {
-        counts.notes += 1;
+    for (const row of results) {
+      if (counts[row.category] !== undefined) {
+        counts[row.category] = Number(row.count);
       }
     }
 

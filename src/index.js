@@ -1,18 +1,12 @@
-import { getConfig } from "./config.js";
 import { detectCategory } from "./categorize.js";
 import { doneKeyboard, formatItem, formatList, formatSummary, helpMessage, quickMenu } from "./format.js";
 import { extractReminder, formatReminder } from "./reminder.js";
 import { Store } from "./store.js";
 import { TelegramClient } from "./telegram.js";
 
-const config = getConfig();
-const store = new Store(config.dbFile);
-const telegram = new TelegramClient(config.token);
 const replyMarkup = {
   reply_markup: quickMenu()
 };
-
-console.log(`Bot started. Data file: ${config.dbFile}`);
 
 function normalizeInput(text) {
   const normalized = (text || "").trim();
@@ -56,7 +50,7 @@ function parseDoneCommand(text) {
   return match ? Number(match[1]) : null;
 }
 
-async function handleCommand(message) {
+async function handleCommand(message, store, telegram) {
   const chatId = message.chat.id;
   const text = normalizeInput(message.text);
 
@@ -66,34 +60,35 @@ async function handleCommand(message) {
   }
 
   if (text === "/list") {
-    const items = store.listItems({ chatId });
+    const items = await store.listItems({ chatId });
     await telegram.sendMessage(chatId, formatList("Item aktif terbaru", items), buildReplyOptions(items));
     return;
   }
 
   if (["/todo", "/buy", "/places", "/notes"].includes(text)) {
     const category = text.slice(1);
-    const items = store.listItems({ chatId, category });
+    const items = await store.listItems({ chatId, category });
     await telegram.sendMessage(chatId, formatList(`Kategori ${category}`, items), buildReplyOptions(items));
     return;
   }
 
   if (text === "/summary") {
-    await telegram.sendMessage(chatId, formatSummary(store.summary(chatId)), replyMarkup);
+    await telegram.sendMessage(chatId, formatSummary(await store.summary(chatId)), replyMarkup);
     return;
   }
 
   const doneId = parseDoneCommand(text);
   if (doneId) {
     const item = store.markDone({ chatId, id: doneId });
-    const reply = item ? `Selesai: ${formatItem(item)}` : `Item #${doneId} ga ketemu.`;
+    const resolvedItem = await item;
+    const reply = resolvedItem ? `Selesai: ${formatItem(resolvedItem)}` : `Item #${doneId} ga ketemu.`;
     await telegram.sendMessage(chatId, reply, replyMarkup);
     return;
   }
 
   const reminder = extractReminder(text);
   const category = detectCategory(reminder.cleanText);
-  const item = store.addItem({
+  const item = await store.addItem({
     text: reminder.cleanText,
     category,
     userId: message.from?.id ?? null,
@@ -107,7 +102,7 @@ async function handleCommand(message) {
   await telegram.sendMessage(chatId, `Tersimpan: ${formatItem(item)}${reminderText}`, buildReplyOptions([item]));
 }
 
-async function handleCallbackQuery(callbackQuery) {
+async function handleCallbackQuery(callbackQuery, store, telegram) {
   const callbackData = callbackQuery.data || "";
   const chatId = callbackQuery.message?.chat?.id;
 
@@ -117,7 +112,7 @@ async function handleCallbackQuery(callbackQuery) {
 
   if (callbackData.startsWith("done:")) {
     const id = Number(callbackData.split(":")[1]);
-    const item = store.markDone({ chatId, id });
+    const item = await store.markDone({ chatId, id });
     await telegram.answerCallbackQuery(
       callbackQuery.id,
       item ? "Item ditandai selesai" : "Item tidak ditemukan"
@@ -131,47 +126,95 @@ async function handleCallbackQuery(callbackQuery) {
   await telegram.answerCallbackQuery(callbackQuery.id, "Aksi tidak dikenali");
 }
 
-async function poll() {
-  let offset = 0;
+async function processReminderQueue(env) {
+  const store = new Store(env.DB);
+  const telegram = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
+  const dueItems = await store.dueReminders(new Date());
 
-  while (true) {
-    try {
-      const updates = await telegram.getUpdates(offset);
-      for (const update of updates) {
-        offset = update.update_id + 1;
-        if (update.callback_query) {
-          await handleCallbackQuery(update.callback_query);
-          continue;
-        }
-
-        if (!update.message?.text) {
-          continue;
-        }
-
-        await handleCommand(update.message);
-      }
-
-      const dueItems = store.dueReminders(new Date());
-      for (const due of dueItems) {
-        const prefix =
-          due.type === "before"
-            ? "Reminder 15 menit lagi:"
-            : "Reminder sekarang:";
-        await telegram.sendMessage(
-          due.item.chatId,
-          `${prefix} ${formatItem(due.item)}`,
-          replyMarkup
-        );
-        store.markReminderSent(due.item.id, due.type);
-      }
-    } catch (error) {
-      console.error(error.message);
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-    }
+  for (const due of dueItems) {
+    const prefix =
+      due.type === "before"
+        ? "Reminder 15 menit lagi:"
+        : "Reminder sekarang:";
+    await telegram.sendMessage(
+      due.item.chatId,
+      `${prefix} ${formatItem(due.item)}`,
+      replyMarkup
+    );
+    await store.markReminderSent(due.item.id, due.type);
   }
 }
 
-poll().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+function unauthorized() {
+  return new Response("Unauthorized", { status: 401 });
+}
+
+async function setupWebhook(request, env) {
+  if (request.headers.get("x-admin-secret") !== env.ADMIN_SECRET) {
+    return unauthorized();
+  }
+
+  const url = new URL(request.url);
+  const webhookUrl = `${url.origin}/telegram/webhook`;
+  const telegram = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
+  await telegram.setWebhook(webhookUrl);
+
+  return Response.json({
+    ok: true,
+    webhookUrl
+  });
+}
+
+async function handleWebhook(request, env) {
+  const update = await request.json();
+  const store = new Store(env.DB);
+  const telegram = new TelegramClient(env.TELEGRAM_BOT_TOKEN);
+
+  if (update.callback_query) {
+    await handleCallbackQuery(update.callback_query, store, telegram);
+    return Response.json({ ok: true });
+  }
+
+  if (update.message?.text) {
+    await handleCommand(update.message, store, telegram);
+  }
+
+  return Response.json({ ok: true });
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname === "/") {
+      return Response.json({
+        ok: true,
+        service: "telegram-notes-bot",
+        mode: "cloudflare-worker"
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/telegram/webhook") {
+      return handleWebhook(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/setup-webhook") {
+      return setupWebhook(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/process-reminders") {
+      if (request.headers.get("x-admin-secret") !== env.ADMIN_SECRET) {
+        return unauthorized();
+      }
+
+      ctx.waitUntil(processReminderQueue(env));
+      return Response.json({ ok: true, queued: true });
+    }
+
+    return new Response("Not Found", { status: 404 });
+  },
+
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(processReminderQueue(env));
+  }
+};

@@ -26,13 +26,6 @@ export class TelegramClient {
     return data.result;
   }
 
-  getUpdates(offset) {
-    return this.request("getUpdates", {
-      offset,
-      timeout: 30
-    });
-  }
-
   sendMessage(chatId, text, extra = {}) {
     return this.request("sendMessage", {
       chat_id: chatId,
@@ -46,5 +39,9 @@ export class TelegramClient {
       callback_query_id: callbackQueryId,
       text
     });
+  }
+
+  setWebhook(url) {
+    return this.request("setWebhook", { url });
   }
 }
