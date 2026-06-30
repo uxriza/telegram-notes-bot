@@ -2,6 +2,8 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+const TIMEZONE_FIX_CUTOFF = "2026-06-22T08:31:00.000Z";
+
 function mapItem(row) {
   if (!row) {
     return null;
@@ -172,5 +174,60 @@ export class Store {
     }
 
     return counts;
+  }
+
+  async debugReminderState(limit = 10) {
+    const { results } = await this.db
+      .prepare(
+        `SELECT id, text, category, status, chat_id, reminder_at, reminder_15_sent_at, reminder_sent_at, created_at, updated_at
+         FROM items
+         ORDER BY id DESC
+         LIMIT ?`
+      )
+      .bind(limit)
+      .all();
+
+    return results.map(mapItem);
+  }
+
+  async repairLegacyReminderOffsets() {
+    const { results } = await this.db
+      .prepare(
+        `SELECT *
+         FROM items
+         WHERE status = 'active'
+           AND reminder_at IS NOT NULL
+           AND reminder_sent_at IS NULL
+           AND reminder_15_sent_at IS NULL
+           AND created_at < ?`
+      )
+      .bind(TIMEZONE_FIX_CUTOFF)
+      .all();
+
+    const repaired = [];
+    const timestamp = nowIso();
+
+    for (const row of results) {
+      const item = mapItem(row);
+      const repairedAt = new Date(new Date(item.reminder.at).getTime() - 7 * 60 * 60 * 1000).toISOString();
+
+      await this.db
+        .prepare(
+          `UPDATE items
+           SET reminder_at = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .bind(repairedAt, timestamp, item.id)
+        .run();
+
+      repaired.push({
+        id: item.id,
+        text: item.text,
+        oldReminderAt: item.reminder.at,
+        newReminderAt: repairedAt
+      });
+    }
+
+    return repaired;
   }
 }

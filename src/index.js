@@ -169,6 +169,8 @@ async function processReminderQueue(env) {
     );
     await store.markReminderSent(due.item.id, due.type);
   }
+
+  return dueItems.length;
 }
 
 function unauthorized() {
@@ -208,6 +210,43 @@ async function handleWebhook(request, env) {
   return Response.json({ ok: true });
 }
 
+async function debugReminders(request, env) {
+  if (request.headers.get("x-admin-secret") !== env.ADMIN_SECRET) {
+    return unauthorized();
+  }
+
+  const store = new Store(env.DB);
+  const now = new Date();
+  const recent = await store.debugReminderState(10);
+  const due = await store.dueReminders(now);
+
+  return Response.json({
+    ok: true,
+    now: now.toISOString(),
+    dueCount: due.length,
+    due: due.map((entry) => ({
+      type: entry.type,
+      item: entry.item
+    })),
+    recent
+  });
+}
+
+async function repairReminders(request, env) {
+  if (request.headers.get("x-admin-secret") !== env.ADMIN_SECRET) {
+    return unauthorized();
+  }
+
+  const store = new Store(env.DB);
+  const repaired = await store.repairLegacyReminderOffsets();
+
+  return Response.json({
+    ok: true,
+    repairedCount: repaired.length,
+    repaired
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -235,6 +274,14 @@ export default {
 
       ctx.waitUntil(processReminderQueue(env));
       return Response.json({ ok: true, queued: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/admin/debug-reminders") {
+      return debugReminders(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/admin/repair-reminders") {
+      return repairReminders(request, env);
     }
 
     return new Response("Not Found", { status: 404 });

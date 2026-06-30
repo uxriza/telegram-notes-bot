@@ -23,9 +23,20 @@ const weekdayMap = {
   sabtu: 6
 };
 
+const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000;
+const TIME_ZONE = "Asia/Jakarta";
+
+function toJakartaTime(date) {
+  return new Date(date.getTime() + JAKARTA_OFFSET_MS);
+}
+
+function fromJakartaTime(date) {
+  return new Date(date.getTime() - JAKARTA_OFFSET_MS);
+}
+
 function startOfMinute(date) {
-  const copy = new Date(date);
-  copy.setSeconds(0, 0);
+  const copy = toJakartaTime(date);
+  copy.setUTCSeconds(0, 0);
   return copy;
 }
 
@@ -57,7 +68,7 @@ function parseHourMinute(match) {
 
 function applyTime(baseDate, time) {
   const reminderAt = new Date(baseDate);
-  reminderAt.setHours(time.hour, time.minute, 0, 0);
+  reminderAt.setUTCHours(time.hour, time.minute, 0, 0);
   return reminderAt;
 }
 
@@ -82,7 +93,7 @@ function resolveBaseDate(dayHint, now) {
   const normalized = dayHint.toLowerCase();
 
   if (normalized === "besok") {
-    baseDate.setDate(baseDate.getDate() + 1);
+    baseDate.setUTCDate(baseDate.getUTCDate() + 1);
     return baseDate;
   }
 
@@ -96,12 +107,12 @@ function resolveBaseDate(dayHint, now) {
 
   const targetWeekday = weekdayMap[normalized];
   if (targetWeekday !== undefined) {
-    const currentWeekday = baseDate.getDay();
+    const currentWeekday = baseDate.getUTCDay();
     let diff = targetWeekday - currentWeekday;
     if (diff < 0) {
       diff += 7;
     }
-    baseDate.setDate(baseDate.getDate() + diff);
+    baseDate.setUTCDate(baseDate.getUTCDate() + diff);
   }
 
   return baseDate;
@@ -115,21 +126,22 @@ function finalizeRelativeReminder({ normalized, now, dayHint, timeMatch, cleanup
     return { cleanText: normalized, reminderAt: null };
   }
 
+  const localNow = toJakartaTime(now);
   const baseDate = resolveBaseDate(dayHint, now);
   let reminderAt = applyTime(baseDate, time);
 
-  if (!dayHint && reminderAt <= now) {
-    reminderAt.setDate(reminderAt.getDate() + 1);
+  if (!dayHint && reminderAt <= localNow) {
+    reminderAt.setUTCDate(reminderAt.getUTCDate() + 1);
   }
 
-  if (dayHint === "nanti" && reminderAt <= now) {
-    reminderAt.setDate(reminderAt.getDate() + 1);
+  if (dayHint === "nanti" && reminderAt <= localNow) {
+    reminderAt.setUTCDate(reminderAt.getUTCDate() + 1);
   }
 
   const cleanText = cleanupParts(normalized, cleanupTargets) || normalized;
   return {
     cleanText,
-    reminderAt: reminderAt.toISOString()
+    reminderAt: fromJakartaTime(reminderAt).toISOString()
   };
 }
 
@@ -186,20 +198,23 @@ export function extractReminder(text, now = new Date()) {
       return { cleanText: normalized, reminderAt: null };
     }
 
+    const localNow = toJakartaTime(now);
     const reminderAt = startOfMinute(now);
-    reminderAt.setMonth(monthMap[rawMonth], Number(rawDate));
+    reminderAt.setUTCMonth(monthMap[rawMonth], Number(rawDate));
     reminderAt.setFullYear(
-      reminderAt < now && monthMap[rawMonth] < now.getMonth() ? now.getFullYear() + 1 : now.getFullYear()
+      reminderAt < localNow && monthMap[rawMonth] < localNow.getUTCMonth()
+        ? localNow.getUTCFullYear() + 1
+        : localNow.getUTCFullYear()
     );
-    reminderAt.setHours(time.hour, time.minute, 0, 0);
+    reminderAt.setUTCHours(time.hour, time.minute, 0, 0);
 
-    if (reminderAt <= now) {
-      reminderAt.setFullYear(reminderAt.getFullYear() + 1);
+    if (reminderAt <= localNow) {
+      reminderAt.setUTCFullYear(reminderAt.getUTCFullYear() + 1);
     }
 
     return {
       cleanText: cleanupText(normalized, absoluteMatch[0]) || normalized,
-      reminderAt: reminderAt.toISOString()
+      reminderAt: fromJakartaTime(reminderAt).toISOString()
     };
   }
 
@@ -219,7 +234,8 @@ export function formatReminder(reminderAt) {
     day: "numeric",
     month: "long",
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
+    timeZone: TIME_ZONE
   });
 
   return formatter.format(date);
